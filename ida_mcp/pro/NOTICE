@@ -1,0 +1,79 @@
+ida-mcp: ida_mcp.pro ported-runtime notice
+==========================================
+
+The ida_mcp.pro package ports the community server "ida-pro-mcp" onto the
+official Hex-Rays ida-mcp server. Its runtime bundle
+(ida_mcp/pro/runtime/) is derived from third-party, MIT-licensed code; this
+notice carries the attribution and the license texts as required by both.
+
+Source of truth for the port
+----------------
+Upstream project:  ida-pro-mcp (https://github.com/mrexodia/ida-pro-mcp)
+Ported revision:  the installed ida_pro_mcp 2.0.0 wheel tree under
+                   ida_pro_mcp/ida_mcp/ (12 api modules + utils + compat
+                   + vendored _sigmaker engine).
+
+Copyright and license: ida-pro-mcp
+----------------
+
+MIT License
+
+Copyright (c) 2025 Duncan Ogilvie
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Vendored engine: ida-sigmaker
+----------------
+ida_mcp/pro/runtime/_sigmaker.py is a byte-for-byte copy of the sigmaker
+engine vendored inside ida-pro-mcp upstream, which in turn derives from
+ida-sigmaker (https://github.com/mahmoudimus/ida-sigmaker), synced with
+upstream v1.8.0. Its embedded MIT notice is preserved verbatim in the file
+and reproduced here:
+
+MIT License
+
+Copyright (c) 2024 Mahmoud Abdelkader (@mahmoudimus)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Scope of the port
+----------------
+Ported under MIT into this repository (also MIT, (c) Hex-Rays SA): the 95
+@tool functions and 11 @resource handlers implemented by the runtime files,
+their TypedDict result shapes (ida_mcp/pro/schemas.py), and the vendored
+sigmaker engine. Porting was mechanical via artifacts_port/transform.py:
+infra imports and decorators dropped, IDAError renamed to ProError, all tool
+logic preserved. The server-side wrappers (tools.py, resources.py,
+dispatch.py, bootstrap.py, spec.py) are original ida-mcp code.
