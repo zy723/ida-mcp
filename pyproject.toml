@@ -35,3 +35,18 @@ only-include = ["ida_mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# The runtime bundle is ported verbatim from ida-pro-mcp (see
+# ida_mcp/pro/NOTICE); keeping it close to upstream wins over house style.
+exclude = ["ida_mcp/pro/runtime"]
+
+[tool.ruff.lint.per-file-ignores]
+# These tests exec the generated installer program and the runtime bundle —
+# that IS the code under test.
+"tests/test_pro_bootstrap.py" = ["S102"]
+"tests/test_pro_signature_parity.py" = ["S102"]
+
+[tool.ty.src]
+# Same rationale as the ruff exclude: the ported bundle follows upstream.
+exclude = ["ida_mcp/pro/runtime"]
