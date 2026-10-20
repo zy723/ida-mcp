@@ -134,5 +134,21 @@ constructor arguments, allowing cloud or hub applications to customize database
 resolution while retaining the official tools, tracing, cancellation, and
 shutdown behavior.
 
+## Pro tool surface
+
+The six-tool surface is doubled by `ida_mcp.pro`: 95 fine-grained tools and
+11 resources ported from ida-pro-mcp (attribution and license texts in
+`ida_mcp/pro/NOTICE`). The server process holds thin `@tool` wrappers with
+strict parameter schemas; dispatch serializes the arguments into a
+`pro_call(name, json.loads(...))` program executed by the standard
+`DatabaseManager.execute_python` path, identical in lifecycle, tracing, and
+cancellation to the official tools. The first pro call on each worker
+installs the ported runtime as a content-addressed module
+(`_ida_mcp_pro_<sha16>`) — a new build produces a fresh module name, so
+stale code is impossible. The 22 `dbg_*` tools form an extension group,
+hidden from `tools/list` and rejected at `tools/call` until the group is
+enabled with `--extensions dbg` or `IDA_MCP_PRO_EXTENSIONS=dbg`. Full
+user-facing documentation: [docs/PRO_TOOLS.md](PRO_TOOLS.md).
+
 The MCP package has direct dependencies on ZeroMCP and `packaging`. IDA Nexus
 has no dependency on this package or on ZeroMCP.

@@ -145,6 +145,13 @@ To test the GUI integration, open something in IDA and ask your harness:
 
 > What do I have open in the IDA GUI?
 
+Besides the six official tools, the server exposes 95 fine-grained pro
+tools (decompile, xrefs, pseudocode batch analysis, signature making, CTF
+helpers, …) ported from ida-pro-mcp, plus a 22-tool debugger extension
+that stays hidden until you start the server with `--extensions dbg` (or
+set `IDA_MCP_PRO_EXTENSIONS=dbg`). See
+[docs/PRO_TOOLS.md](docs/PRO_TOOLS.md) for the full surface.
+
 ## Developers: IDA Nexus
 
 The IDA MCP project is built on [IDA Nexus](https://github.com/HexRaysSA/ida-nexus),
