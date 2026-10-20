@@ -60,6 +60,7 @@ MCP_ENVIRONMENT_VARIABLES = (
     "IDA_NEXUS_STATE_DIR",
     STATE_DIR_ENVIRONMENT_VARIABLE,
     MCP_IDLE_TIMEOUT_ENVIRONMENT_VARIABLE,
+    "IDA_MCP_PRO_EXTENSIONS",
 )
 
 
@@ -1032,3 +1033,15 @@ __all__ = [
     "stop_http_server",
     "tool",
 ]
+
+
+def _register_pro_tools() -> None:
+    """Mount the ported ida-pro-mcp surface (95 tools + 11 resources) on the
+    same server. Registration happens bottom-of-module so the official tools
+    stay first in tools/list order."""
+    from ida_mcp.pro import register as _register_pro
+
+    _register_pro()
+
+
+_register_pro_tools()

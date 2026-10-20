@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
 
@@ -77,10 +78,20 @@ def _add_server_arguments(parser: argparse.ArgumentParser) -> None:
             f"{MCP_IDLE_TIMEOUT_ENVIRONMENT_VARIABLE}."
         ),
     )
+    parser.add_argument(
+        "--extensions",
+        default="",
+        help=(
+            "Comma-separated ida_mcp.pro extension groups to enable (e.g. "
+            "'dbg' for the debugger tools). Can also be set with "
+            "IDA_MCP_PRO_EXTENSIONS."
+        ),
+    )
 
 
 def _stdio_cli(argv: list[str] | None = None) -> int:
     from ida_mcp.mcp import serve_stdio
+    from ida_mcp.pro import spec
 
     parser = argparse.ArgumentParser(
         prog="ida-mcp stdio",
@@ -88,6 +99,8 @@ def _stdio_cli(argv: list[str] | None = None) -> int:
     )
     _add_server_arguments(parser)
     args = parser.parse_args(argv)
+    if args.extensions:
+        os.environ.setdefault(spec.PRO_EXTENSIONS_ENVIRONMENT_VARIABLE, args.extensions)
     serve_stdio(
         database=args.database,
         agent=args.agent,
@@ -98,6 +111,7 @@ def _stdio_cli(argv: list[str] | None = None) -> int:
 
 def _http_cli(argv: list[str] | None = None) -> int:
     from ida_mcp.mcp import serve_http
+    from ida_mcp.pro import spec
 
     parser = argparse.ArgumentParser(
         prog="ida-mcp http",
@@ -114,6 +128,8 @@ def _http_cli(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     print("Server is running; press Ctrl+C to stop.", file=sys.stderr)
+    if args.extensions:
+        os.environ.setdefault(spec.PRO_EXTENSIONS_ENVIRONMENT_VARIABLE, args.extensions)
     serve_http(
         args.host,
         args.port,
