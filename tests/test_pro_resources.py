@@ -76,7 +76,7 @@ def _quiet_trace(monkeypatch: pytest.MonkeyPatch) -> None:
 def manager(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeManager]:
     fake = _FakeManager()
     monkeypatch.setattr(mcp_api, "DATABASE_MANAGER", fake)
-    dispatch._INSTALLED[id(fake)] = True
+    dispatch._INSTALLED[(id(fake), "target-1")] = True
     yield fake
     dispatch._INSTALLED.clear()
 

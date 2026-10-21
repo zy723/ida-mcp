@@ -26,10 +26,12 @@ from ida_mcp.pro import bootstrap, spec
 # program structure. 2 MiB args guard keeps the HTTP body (< 4 MiB) safe.
 MAX_ARGS_BYTES = 2 * 1024 * 1024
 
-# Per-handle flag that the bundle install program was already sent once.
-# Keyed by id() of the manager's resolved handle object — simplest reliable
-# identity — cleared whenever the module digest changes.
-_INSTALLED: dict[int, bool] = {}
+# Per-target flag that the bundle install program was already sent once.
+# Keyed by (id(manager), resolved target id): one manager serves many
+# workers (GUI + idalib copies, or several idalib copies), and each worker
+# process has its own sys.modules — an install recorded against the first
+# target must never suppress the install for a second.
+_INSTALLED: dict[tuple[int, str], bool] = {}
 _INSTALL_LOCK = threading.Lock()
 
 
@@ -199,8 +201,8 @@ def _unwrap(result: Any) -> Any:
     raise McpToolError(f"unexpected pro runtime envelope: {payload!r}")
 
 
-def _manager_key(manager: Any, target_id: str) -> int:
-    return id(manager)
+def _manager_key(manager: Any, target_id: str) -> tuple[int, str]:
+    return (id(manager), target_id)
 
 
 def _needs_install(manager: Any, target_id: str) -> bool:

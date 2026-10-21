@@ -6,19 +6,31 @@ into a content-addressed module (``_ida_mcp_pro_<sha16>``). A later server
 build produces a different digest => a fresh module name => a clean
 reinstall, mirroring ida-nexus's ``_RemoteProgram.ensure`` pattern.
 
+The installer must be SELF-CONTAINED: nexus executes every submitted program
+inside a per-lease session namespace and clears it when the lease cycles
+(close_database routes through release_session). So the bundle never borrows
+the installer program's globals — everything is exec'd into the module's own
+``__dict__``, and the process-global ``sys.modules`` keeps it alive across
+leases. prologue/epilogue/sources ship as STRING LITERALS for the same
+reason: nexus AST-protects the submitted program by inserting cancellation
+handlers that reference its sentinel through the program's globals, and
+inline text would bake those references into the installed code objects.
+
 The generated remote program:
 
-1. Creates the bundle module and a namespace dict (real ``ModuleType`` so
-   ``compat.fn()`` / ``_sm.Klass`` attribute access from the api_* files
-   keeps working through prologue aliases).
-2. Execs a prologue defining ``ProError``, the JSON guards and the module
-   aliases.
-3. Execs each runtime source file into the shared namespace in the fixed
-   order recorded in ``RUNTIME_FILES`` (utils first: TypedDicts and helpers
-   used by every consumer).
-4. Execs an epilogue that builds ``_PRO_TOOLS`` / ``_PRO_RESOURCES`` and
-   defines ``pro_call`` / ``pro_call_resource``.
-5. Registers the module in ``sys.modules`` so later calls skip the guard.
+1. Creates the bundle module and registers it in ``sys.modules`` before
+   any exec, so dataclass/typing lookups of ``cls.__module__`` resolve.
+2. Binds the bundle module's ``__dict__`` as the namespace (real
+   ``ModuleType`` so ``compat.fn()`` / ``_sm.Klass`` attribute access from
+   the api_* files keeps working through prologue aliases).
+3. Execs a prologue (string literal) defining ``ProError``, the JSON guards
+   and the module aliases.
+4. Execs each runtime source file into the module dict in the fixed order
+   recorded in ``RUNTIME_FILES`` (utils first: TypedDicts and helpers used
+   by every consumer); compat/_sigmaker get their own digest-suffixed
+   sub-modules bound back as ``compat`` / ``_sm`` aliases.
+5. Execs an epilogue (string literal) that builds ``_PRO_TOOLS`` /
+   ``_PRO_RESOURCES`` and defines ``pro_call`` / ``pro_call_resource``.
 """
 
 from __future__ import annotations
@@ -118,10 +130,11 @@ def _pro_json_dumps(value):
 _EPILOGUE = '''\
 
 # Dispatch glue. _PRO_TOOL_NAMES / _PRO_RESOURCE_NAMES are data injected by
-# dispatch.py right before this epilogue; keeping them dynamic prevents drift
-# with spec.py.
-_PRO_TOOLS = {name: _ns[name] for name in _PRO_TOOL_NAMES}
-_PRO_RESOURCES = {name: _ns[name] for name in _PRO_RESOURCE_NAMES}
+# bootstrap.py right before this epilogue; keeping them dynamic prevents drift
+# with spec.py. The epilogue is the LAST source exec'd into the module dict,
+# so the module namespace IS its globals().
+_PRO_TOOLS = {name: globals()[name] for name in _PRO_TOOL_NAMES}
+_PRO_RESOURCES = {name: globals()[name] for name in _PRO_RESOURCE_NAMES}
 
 
 def pro_call(name, args):
@@ -177,12 +190,25 @@ _BUNDLE_LOCK = threading.Lock()
 
 
 def runtime_sources() -> tuple[list[str], str]:
-    """Return (sources, digest). Cached; the package is immutable at runtime."""
+    """Return (sources, digest). Cached; the package is immutable at runtime.
+
+    The digest covers every piece of program text that shapes the installed
+    bundle: prologue, runtime sources, epilogue and the installer template
+    itself. The template matters as much as the code it execs — the guard
+    skips install by module NAME, so a mechanism fix with an unchanged
+    digest would leave a broken bundle alive on a running worker (it would
+    never be reinstalled). A change to any covered text resolves to a new
+    module name, which is the only eviction mechanism a bad install needs
+    (stale entries are inert; the guard skips them by name).
+    """
     global _BUNDLE_CACHE
     with _BUNDLE_LOCK:
         if _BUNDLE_CACHE is None:
             sources = _build_sources()
-            digest = hashlib.sha256("\0".join(sources).encode("utf-8")).hexdigest()[:16]
+            digest_input = "\0".join(
+                [_PROLOGUE, *sources, _EPILOGUE, _INSTALLER_TEMPLATE]
+            )
+            digest = hashlib.sha256(digest_input.encode("utf-8")).hexdigest()[:16]
             _BUNDLE_CACHE = (sources, digest)
         return _BUNDLE_CACHE
 
@@ -193,50 +219,66 @@ def module_name() -> str:
     return f"_ida_mcp_pro_{digest}"
 
 
-# Remote installer: prologue + per-file exec, with per-module aliases for the
-# files that consumers reference attribute-style (compat, _sigmaker).
-# The bundle namespace is pre-registered under the content-addressed module
-# name before any exec so dataclass/typing lookups of cls.__module__ resolve.
+# The installer constructs ONE module object and execs everything into its
+# __dict__, so the installed pro_call.__globals__ is the module dict that
+# sys.modules keeps alive — never the installer program's lease namespace.
+# The try/finally rolls the sys.modules entry back if any exec fails (or a
+# nexus cancellation lands mid-install): a half-executed bundle must never
+# poison the name, or the call-site guard would skip reinstall forever.
+# finally (not except) is load-bearing here: nexus's AST protection inserts
+# an except handler referencing its sentinel into every try of the submitted
+# program, and that handler re-raises without unwinding through ours — but
+# finally runs on every exit path, sentinel included.
 _INSTALLER_TEMPLATE = """\
 import sys
 import types as _pro_types
 
 _MODULE_NAME = {module_name!r}
-_SOURCES = {sources}
-_PRO_TOOL_NAMES = {tool_names!r}
-_PRO_RESOURCE_NAMES = {resource_names!r}
-{prologue}
-_ns = globals()
-_ns["__name__"] = _MODULE_NAME
 _module = _pro_types.ModuleType(_MODULE_NAME)
-sys.modules[_MODULE_NAME] = _module
+_ns = _module.__dict__
+_ns['__builtins__'] = __builtins__
+_ok = False
+try:
+    # Register before any exec: dataclass/typing machinery inside the
+    # runtime sources resolves sys.modules[cls.__module__].
+    sys.modules[_MODULE_NAME] = _module
+    exec(compile({prologue!r}, _MODULE_NAME + ':prologue', 'exec'), _ns)
+    _SOURCES = {sources}
+    _ns['_PRO_TOOL_NAMES'] = {tool_names!r}
+    _ns['_PRO_RESOURCE_NAMES'] = {resource_names!r}
 {source_execs}
-{epilogue}
-_module.__dict__.update(_ns)
-_module.pro_call = pro_call
-_module.pro_call_resource = pro_call_resource
-sys.modules[_MODULE_NAME] = _module
+    exec(compile({epilogue!r}, _MODULE_NAME + ':epilogue', 'exec'), _ns)
+    _ok = True
+finally:
+    if not _ok:
+        sys.modules.pop(_MODULE_NAME, None)
 """
 
 
 def _installer_source_execs(module_files: tuple[str, ...] | None = None) -> str:
-    """Per-file exec blocks. compat.py and _sigmaker.py are exec'd into real
-    module objects and alias-bound in the shared namespace as `compat` /
+    """Per-file exec blocks, emitted INSIDE the installer's try (they use the
+    module dict bound there as ``_ns``). compat.py and _sigmaker.py are exec'd
+    into real module objects and alias-bound in the module dict as `compat` /
     `_sm` (what `from . import compat` / `from . import _sigmaker as _sm`
-    provided upstream). Every file is compiled under the bundle module name
-    so dataclass/typing machinery that resolves ``sys.modules[cls.__module__]``
-    finds a registered module instead of an unknown '<string>'."""
+    provided upstream); their names carry the bundle digest so a stale
+    ``setdefault`` entry from an older build can never be reused. Every file
+    is compiled under its own module name so dataclass/typing machinery that
+    resolves ``sys.modules[cls.__module__]`` finds a registered module
+    instead of an unknown '<string>'."""
     files = module_files or RUNTIME_FILES
-    blocks: list[str] = ["_ns = globals()"]
+    blocks: list[str] = []
     for idx, name in enumerate(files):
         if name in ("compat.py", "_sigmaker.py"):
             sub = "compat" if name == "compat.py" else "_sigmaker"
             alias = "compat" if name == "compat.py" else "_sm"
+            # sub name derived at runtime from _MODULE_NAME (already bound in
+            # the installer) => digest-suffixed, so setdefault can never
+            # reuse a stale sub-module from an older bundle build.
             blocks.append(
-                f"_sub_{idx} = _pro_types.ModuleType('_ida_mcp_pro_{sub}')\n"
-                f"_sub_{idx}.__dict__['__name__'] = '_ida_mcp_pro_{sub}'\n"
-                f"sys.modules.setdefault('_ida_mcp_pro_{sub}', _sub_{idx})\n"
-                f"exec(compile(_SOURCES[{idx}], '_ida_mcp_pro_{sub}', 'exec'), _sub_{idx}.__dict__)\n"
+                f"_sub_name_{idx} = _MODULE_NAME + '_{sub}'\n"
+                f"_sub_{idx} = _pro_types.ModuleType(_sub_name_{idx})\n"
+                f"sys.modules.setdefault(_sub_name_{idx}, _sub_{idx})\n"
+                f"exec(compile(_SOURCES[{idx}], _sub_name_{idx}, 'exec'), _sub_{idx}.__dict__)\n"
                 f"_ns[{alias!r}] = _sub_{idx}"
             )
         else:
@@ -273,7 +315,9 @@ def build_call_code(
         tool_names=tool_names,
         resource_names=resource_names,
         prologue=_PROLOGUE,
-        source_execs=_installer_source_execs(),
+        # The blocks land inside the installer's try (4-space body level);
+        # the whole installer is indented once more under the guard below.
+        source_execs=indent(_installer_source_execs()),
         epilogue=_EPILOGUE,
     )
 

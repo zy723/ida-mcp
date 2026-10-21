@@ -107,7 +107,7 @@ def installed(
 ) -> Iterator[_FakeManager]:
     """Fake manager wired in; bundle-install flag pre-set for current manager."""
     monkeypatch.setattr(mcp_api, "DATABASE_MANAGER", manager)
-    dispatch._INSTALLED[id(dispatch._database_manager())] = True
+    dispatch._INSTALLED[(id(dispatch._database_manager()), "target-1")] = True
     yield manager
     dispatch._INSTALLED.clear()
 

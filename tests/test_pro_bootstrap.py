@@ -304,3 +304,91 @@ def test_pro_call_error_envelope(
     module._PRO_TOOLS["int_convert"] = _boom
     result = module.pro_call("int_convert", {"inputs": []})
     assert result == {"pro_error": "Address/name not found: 'zzz'"}
+
+
+def test_bundle_survives_lease_namespace_release(
+    mocked_worker: types.ModuleType,
+) -> None:
+    """Regression: close_database -> release_session clears nexus's per-lease
+    execution namespace, and the old installer bound pro_call.__globals__ to
+    exactly that dict — every pro tool then died with NameError until the
+    worker restarted.
+
+    The bundle must own its namespace: install through a throwaway env dict,
+    clear the env the way release_session does, and the sys.modules entry
+    alone must keep calling pro_call alive.
+    """
+    # The module-scoped fixture shares the bundle across tests; earlier tests
+    # stub _PRO_TOOLS entries, so force a clean reinstall from this install
+    # program (the guard skips install when the name already exists).
+    module_name = mocked_worker.module_name()
+    sys.modules.pop(module_name, None)
+
+    code = mocked_worker.build_call_code(
+        "int_convert",
+        json.dumps({"inputs": [{"text": "0"}]}),
+        tool_names=["int_convert"],
+        resource_names=[],
+        include_install=True,
+    )
+    env: dict[str, object] = {"__name__": "__worker_lease__"}
+    exec(compile(code, "<lease-install>", "exec"), env)
+
+    module = sys.modules[module_name]
+    # Sanity: the install bound everything into the module dict, and the
+    # module was registered before the call-site program returned.
+    assert module.pro_call.__globals__ is module.__dict__
+
+    # Simulate release_session(lease_id): wipe the installer program's
+    # namespace entirely. The bundle holds no reference into it.
+    env.clear()
+
+    result = module.pro_call("int_convert", {"inputs": [{"text": "0x10"}]})
+    assert result["pro"][0]["result"]["decimal"] == "16"
+    # And the bindings still point at the module dict, not any lease dict.
+    assert module.pro_call.__globals__ is module.__dict__
+    assert module.ProError.__module__ == module_name
+
+
+def test_failed_install_rolls_back_sys_modules(
+    mocked_worker: types.ModuleType,
+) -> None:
+    """A half-executed bundle must never poison sys.modules: the guard would
+    then skip reinstall forever while every pro call dies on the wreckage.
+    Corrupt one runtime source and confirm the finally-block rollback drops
+    the module name (nexus may also cancel mid-install; finally covers it)."""
+    bootstrap = mocked_worker
+    corrupted = dict.fromkeys(bootstrap.RUNTIME_FILES, "")
+    corrupted["utils.py"] = "this is not (valid python"
+
+    def _broken_read(filename: str) -> str:
+        return corrupted[filename]
+
+    prev_modules = set(sys.modules)
+    try:
+        # ty: module loaded standalone => attribute writes on a ModuleType do
+        # not resolve; the runtime hot-swap below is deliberate (monkeypatching
+        # via the module object keeps the fixture's other bindings intact).
+        bootstrap._BUNDLE_CACHE = None  # ty: ignore[unresolved-attribute]
+        monkey_read = bootstrap._read_runtime_source
+        bootstrap._read_runtime_source = _broken_read  # ty: ignore[unresolved-attribute]
+        code = bootstrap.build_call_code(
+            "int_convert",
+            json.dumps({"inputs": []}),
+            tool_names=["int_convert"],
+            resource_names=[],
+            include_install=True,
+        )
+        with pytest.raises(SyntaxError):
+            exec(
+                compile(code, "<broken-install>", "exec"), {"__name__": "__worker_b__"}
+            )
+        module_name = bootstrap.module_name()
+        assert module_name not in sys.modules
+    finally:
+        bootstrap._read_runtime_source = monkey_read  # ty: ignore[unresolved-attribute]
+        bootstrap._BUNDLE_CACHE = None  # ty: ignore[unresolved-attribute]
+        bootstrap.runtime_sources()  # rebuild the good cache
+        for name in set(sys.modules) - prev_modules:
+            if name.startswith("_ida_mcp_pro_"):
+                del sys.modules[name]
