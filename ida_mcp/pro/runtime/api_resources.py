@@ -64,6 +64,8 @@ def idb_entrypoints_resource() -> list[dict]:
 def cursor_resource() -> dict:
     """Get current cursor position and function"""
     import ida_kernwin
+    if not ida_kernwin.is_idaq():
+        raise ProError('GUI-only resource: idalib has no cursor')
     ea = ida_kernwin.get_screen_ea()
     func = idaapi.get_func(ea)
     result = {'addr': hex(ea)}
@@ -75,6 +77,9 @@ def cursor_resource() -> dict:
 def selection_resource() -> dict:
     """Get current selection range (if any)"""
     import ida_kernwin
+    widget = ida_kernwin.get_current_widget()
+    if widget is None:
+        raise ProError('GUI-only resource: no active IDA widget')
     start = ida_kernwin.read_range_selection(None)
     if start:
         return {'start': hex(start[0]), 'end': hex(start[1]) if start[1] else None}
