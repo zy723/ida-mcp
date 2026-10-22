@@ -78,7 +78,7 @@ def delete_stack(items: list[StackVarDelete] | StackVarDelete) -> list[StackMuta
             if not ida_frame.get_func_frame(frame_tif, func):
                 results.append({'addr': fn_addr, 'name': var_name, 'error': 'No frame returned'})
                 continue
-            idx, udm = tinfo_get_udm(frame_tif, var_name)
+            idx, udm = compat.tinfo_get_udm(frame_tif, var_name)
             if not udm:
                 results.append({'addr': fn_addr, 'name': var_name, 'error': f'{var_name} not found'})
                 continue

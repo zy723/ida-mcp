@@ -496,7 +496,7 @@ def rename(batch: Annotated[RenameBatch, 'Rename batch with func/data/local/stac
                         halted = True
                         break
                     continue
-                idx, udm = tinfo_get_udm(frame_tif, old_name)
+                idx, udm = compat.tinfo_get_udm(frame_tif, old_name)
                 if not udm:
                     result = {'func_addr': func_addr, 'old': old_name, 'new': new_name, 'error': f"'{old_name}' not found"}
                     results.append(result)
@@ -525,7 +525,7 @@ def rename(batch: Annotated[RenameBatch, 'Rename batch with func/data/local/stac
                 success = True
                 error = None
                 if not dry_run:
-                    _, conflict_udm = tinfo_get_udm(frame_tif, new_name)
+                    _, conflict_udm = compat.tinfo_get_udm(frame_tif, new_name)
                     if conflict_udm and new_name != old_name:
                         success = False
                         error = f'Stack variable name {new_name!r} already exists'

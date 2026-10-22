@@ -324,7 +324,9 @@ def diff_before_after(addr: Annotated[str, 'Function address'], action: Annotate
             name = action_args.get('name')
             if not name:
                 return {'error': "action_args must contain 'name'"}
-            from .api_modify import rename_at_ea
+            # Bundle note: api_modify exec's into the SAME namespace as this
+            # module, so the helper is already a plain global here (upstream
+            # used a package-relative import that has no parent in the bundle).
             ok, err = rename_at_ea(ea, name)
             if not ok:
                 return {'error': err or f'set_name failed for {name!r}'}
@@ -333,7 +335,7 @@ def diff_before_after(addr: Annotated[str, 'Function address'], action: Annotate
             type_str = action_args.get('type')
             if not type_str:
                 return {'error': "action_args must contain 'type'"}
-            from .api_types import _parse_function_tinfo
+            # Bundle note: same-namespace resolution as above.
             try:
                 tif = _parse_function_tinfo(type_str)
             except ValueError as exc:

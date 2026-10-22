@@ -552,7 +552,7 @@ def _infer_type_edit_kind(edit: dict) -> str:
             if fn:
                 frame_tif = ida_typeinf.tinfo_t()
                 if ida_frame.get_func_frame(frame_tif, fn):
-                    _, udm = tinfo_get_udm(frame_tif, str(edit['name']))
+                    _, udm = compat.tinfo_get_udm(frame_tif, str(edit['name']))
                     if udm:
                         return 'stack'
         except Exception:
@@ -626,7 +626,7 @@ def _apply_type_edit(edit: dict[str, Any]) -> SetTypeResult:
             frame_tif = ida_typeinf.tinfo_t()
             if not ida_frame.get_func_frame(frame_tif, func):
                 return {'edit': edit, 'kind': kind, 'error': 'No frame available'}
-            idx, udm = tinfo_get_udm(frame_tif, stack_name)
+            idx, udm = compat.tinfo_get_udm(frame_tif, stack_name)
             if not udm:
                 return {'edit': edit, 'kind': kind, 'error': f'Stack variable not found: {stack_name}'}
             tid = frame_tif.get_udm_tid(idx)
