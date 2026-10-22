@@ -392,3 +392,197 @@ def test_failed_install_rolls_back_sys_modules(
         for name in set(sys.modules) - prev_modules:
             if name.startswith("_ida_mcp_pro_"):
                 del sys.modules[name]
+
+
+class _FakeBatchState:
+    """Stateful idc.batch double recording every transition."""
+
+    def __init__(self) -> None:
+        self.value = 0
+        self.calls: list[tuple[int, int]] = []
+
+    def __call__(self, value: int) -> int:
+        self.calls.append((value, self.value))
+        self.value = value
+        return self.calls[-1][1]
+
+
+def _install_dbg_doubles(module: types.ModuleType) -> tuple:
+    """Wire dbg_start's externals to recording fakes on the bundle module.
+
+    Returns (batch_state, timers, start_result) where timers collects
+    registered (interval_ms, callback) pairs and start_result is a mutable
+    holder the tests poke between scenarios.
+    """
+    batch_state = _FakeBatchState()
+    timers: list[tuple[int, object]] = []
+    holder = {"started": None, "start_ret": -1}
+
+    idc_mock = cast(_MockModule, sys.modules["idc"])
+    idc_mock.batch = batch_state
+    kernwin_mock = cast(_MockModule, sys.modules["ida_kernwin"])
+    kernwin_mock.register_timer = (  # ty: ignore[unresolved-attribute]
+        lambda interval, cb, _t=timers: _t.append((interval, cb)) or None
+    )
+    idaapi_mock = cast(_MockModule, sys.modules["idaapi"])
+    idaapi_mock.start_process = lambda *a, **k: holder["start_ret"]  # ty: ignore[unresolved-attribute]
+
+    # dbg_start's own collaborators, stubbed on the module's globals: an
+    # existing breakpoint set (skips the entry-bp loop), a controllable
+    # is_debugger_on path, and a wait that surfaces the holder's result.
+    def _fake_start_result():
+        started = holder["started"]
+        if started is None:
+            return None
+        return dict(cast(dict[str, object], started))
+
+    def _fake_wait(*args: object, **kwargs: object) -> None:
+        return None
+
+    module.list_breakpoints = lambda: [object()]  # ty: ignore[unresolved-attribute]
+    module._get_debug_start_result = _fake_start_result  # ty: ignore[unresolved-attribute]
+    # wfne_* constants: dbg_start builds the wait_for_next_event flags from
+    # the same namespace, so the double must carry them too.
+    # The module is built by exec at runtime; these attribute writes are the
+    # established deliberate-hot-swap pattern in this file.
+    module.ida_dbg = types.SimpleNamespace(  # ty: ignore[unresolved-attribute]
+        wait_for_next_event=_fake_wait,
+        WFNE_ANY=1,
+        WFNE_SUSP=2,
+        WFNE_SILENT=4,
+    )
+    return batch_state, timers, holder
+
+
+def _restore_dbg_doubles(module: types.ModuleType) -> None:
+    del module.list_breakpoints, module._get_debug_start_result, module.ida_dbg
+
+
+def test_dbg_start_batch_choreography_success(
+    mocked_worker: types.ModuleType,
+) -> None:
+    """Zone by zone, batch must match upstream @keep_batch semantics:
+    body runs at batch=1; a timer re-arms batch=1 right after the nexus
+    finally restored it; the DBG hook then restores interactive=0."""
+    module_name = mocked_worker.module_name()
+    sys.modules.pop(module_name, None)
+    code = mocked_worker.build_call_code(
+        "int_convert",
+        json.dumps({"inputs": []}),
+        tool_names=["int_convert", "dbg_start"],
+        resource_names=[],
+        include_install=True,
+    )
+    exec(compile(code, "<dbg-install-1>", "exec"), {"__name__": "__worker_d1__"})
+    module = sys.modules[module_name]
+
+    batch_state, timers, holder = _install_dbg_doubles(module)
+    try:
+        # A live debugger state surfaces instantly on the first poll.
+        holder["started"] = {"started": True, "suspended": True, "ip": "0x1400"}
+
+        result = module.pro_call("dbg_start", {})
+        assert result == {"pro": {"started": True, "suspended": True, "ip": "0x1400"}}
+    finally:
+        _restore_dbg_doubles(module)
+
+    # Zone A: idc.batch(1) is the first recorded transition (nexus's own
+    # entry pair isn't visible here; we only see the tool body).
+    assert batch_state.calls[0] == (1, 0)
+    # Zone B: simulate nexus's _run_sync finally undoing the batch entry.
+    batch_state(0)
+    # Zone C: fire the 1ms re-arm timer; it must flip batch back on.
+    rearm = next(cb for interval, cb in timers if interval == 1)
+    rearm()
+    assert batch_state.value == 1
+    # Zone D: the debugger comes up; the hook restores interactive.
+    hook = module._dbg_start_batch_hook
+    assert hook is not None and not hook._done
+    hook.dbg_process_start(1, 1, 0, "p", 0, 0)
+    assert batch_state.value == 0
+    assert hook._done
+    # The 30s fallback timer was armed too and now no-ops on a done hook.
+    fallback = next(cb for interval, cb in timers if interval == 30000)
+    fallback()
+    assert batch_state.value == 0
+    # Sanity: the extra debug namespace stub has no pro tools side effects.
+    assert "dbg_start" in module._PRO_TOOLS
+
+
+def test_dbg_start_batch_choreography_immediate_suspension(
+    mocked_worker: types.ModuleType,
+) -> None:
+    """If the hook already fired while the body was polling (process came up
+    inside the wait loop), the re-arm timer must NOT flip batch back on."""
+    module_name = mocked_worker.module_name()
+    sys.modules.pop(module_name, None)
+    code = mocked_worker.build_call_code(
+        "int_convert",
+        json.dumps({"inputs": []}),
+        tool_names=["int_convert", "dbg_start"],
+        resource_names=[],
+        include_install=True,
+    )
+    exec(compile(code, "<dbg-install-2>", "exec"), {"__name__": "__worker_d2__"})
+    module = sys.modules[module_name]
+
+    batch_state, timers, holder = _install_dbg_doubles(module)
+
+    def _wait_then_fire(*args: object, **kwargs: object) -> None:
+        # Simulate: process starts and suspends DURING the body's poll.
+        if not module._dbg_start_batch_hook._done:
+            module._dbg_start_batch_hook.dbg_process_start(1, 1, 0, "p", 0, 0)
+
+    module.ida_dbg = types.SimpleNamespace(  # ty: ignore[unresolved-attribute]
+        wait_for_next_event=_wait_then_fire,
+        WFNE_ANY=1,
+        WFNE_SUSP=2,
+        WFNE_SILENT=4,
+    )
+    try:
+        # First poll says running w/o ip -> grace loop -> wait fires hook.
+        holder["started"] = {"started": True, "running": True}
+        result = module.pro_call("dbg_start", {})
+        assert result["pro"]["started"] is True
+    finally:
+        _restore_dbg_doubles(module)
+
+    rearm = next(cb for interval, cb in timers if interval == 1)
+    rearm()
+    # Hook already restored interactive inside the body; re-arm stays quiet.
+    assert batch_state.value == 0
+
+
+def test_dbg_start_batch_choreography_failure(
+    mocked_worker: types.ModuleType,
+) -> None:
+    """Timeout/cancel path: batch returns to its pre-call value and the hook
+    is disarmed, so no later timer can flip batch on for a dead start."""
+    module_name = mocked_worker.module_name()
+    sys.modules.pop(module_name, None)
+    code = mocked_worker.build_call_code(
+        "int_convert",
+        json.dumps({"inputs": []}),
+        tool_names=["int_convert", "dbg_start"],
+        resource_names=[],
+        include_install=True,
+    )
+    exec(compile(code, "<dbg-install-3>", "exec"), {"__name__": "__worker_d3__"})
+    module = sys.modules[module_name]
+
+    batch_state, timers, holder = _install_dbg_doubles(module)
+    try:
+        holder["started"] = None  # debugger never comes up
+        result = module.pro_call("dbg_start", {})
+        assert "pro_error" in result
+        # Failure zone: batch restored to pre-call 0, hook released.
+        assert batch_state.value == 0
+        assert module._dbg_start_batch_hook._done
+    finally:
+        _restore_dbg_doubles(module)
+
+    # Every armed timer is now inert (fallback sees a done hook; the re-arm
+    # timer was never scheduled on the failure path).
+    for interval, cb in timers:
+        cb()
+    assert batch_state.value == 0

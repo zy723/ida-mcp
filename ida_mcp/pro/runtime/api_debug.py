@@ -175,6 +175,7 @@ def _get_debug_start_result() -> DebugControlResult | None:
     result['started'] = True
     return result
 _DBG_START_BATCH_FALLBACK_MS = 30000
+_DBG_START_REARM_DELAY_MS = 1
 _DBG_START_WAIT_TIMEOUT_SEC = 10.0
 _DBG_START_WAIT_POLL_MS = 100
 _DBG_START_IP_GRACE_POLL_COUNT = 5
@@ -237,6 +238,39 @@ def _arm_dbg_start_batch_hook(restore_batch: int) -> None:
         return -1
     ida_kernwin.register_timer(_DBG_START_BATCH_FALLBACK_MS, _fallback)
 
+def _release_dbg_start_batch_hook() -> None:
+    """Disarm the pending hook and restore batch synchronously (failure paths)."""
+    hook = _dbg_start_batch_hook
+    if hook is not None:
+        hook.fallback_restore()
+
+def _schedule_dbg_start_batch_rearm(hook: '_DbgStartBatchHook') -> None:
+    """Re-arm batch mode right after this execute_python program returns.
+
+    Upstream's @keep_batch left batch ON across the sync-wrapper boundary so
+    the debugger's asynchronous initialization (startup dialogs, dbg engine
+    bring-up) ran under batch mode. In this port every execute_python program
+    is wrapped by nexus, whose _run_sync finally ALWAYS restores the batch
+    state it observed on entry — undoing any idc.batch(1) our body set the
+    moment the program returns. A one-shot timer scheduled here fires on the
+    IDA main thread after that finally has run (timers only dispatch from the
+    main event loop), flipping batch back on until _DbgStartBatchHook
+    restores it on dbg_process_start (or the 30s fallback). The 1ms delay is
+    one event-loop cycle — the tightest re-arm possible without owning the
+    wrapper.
+
+    Setting batch in a timer callback (rather than turning it on and leaving
+    it on) re-creates upstream's exact end state for nested/prolonged sessions;
+    if the hook already fired while the body was polling (process started and
+    suspended inside the wait_for_next_event loop), _done is set and the
+    re-arm is skipped to stay interactive like upstream.
+    """
+    def _rearm():
+        if _dbg_start_batch_hook is hook and (not hook._done):
+            idc.batch(1)
+        return -1
+    ida_kernwin.register_timer(_DBG_START_REARM_DELAY_MS, _rearm)
+
 def dbg_start() -> DebugControlResult:
     """Start debugger session for current target.
 
@@ -247,37 +281,52 @@ def dbg_start() -> DebugControlResult:
     to set up the debugger and dismiss any IDA dialogs (e.g. "matching
     executable names") before trying again.
     """
-    if len(list_breakpoints()) == 0:
-        for i in range(ida_entry.get_entry_qty()):
-            ordinal = ida_entry.get_entry_ordinal(i)
-            addr = ida_entry.get_entry(ordinal)
-            if addr != ida_idaapi.BADADDR:
-                ida_dbg.add_bpt(addr, 0, idaapi.BPT_SOFT)
-    pre_call_batch = 0
-    if pre_call_batch is None:
-        pre_call_batch = 0
-    _arm_dbg_start_batch_hook(restore_batch=pre_call_batch)
-    start_result = idaapi.start_process('', '', '')
-    started = _get_debug_start_result()
-    if started is not None:
-        if started.get('running') and 'ip' not in started:
-            for _ in range(_DBG_START_IP_GRACE_POLL_COUNT):
-                ida_dbg.wait_for_next_event(ida_dbg.WFNE_ANY | ida_dbg.WFNE_SUSP | ida_dbg.WFNE_SILENT, _DBG_START_WAIT_POLL_MS)
-                waited = _get_debug_start_result()
-                if waited is None:
-                    continue
-                started = waited
-                if started.get('suspended') or 'ip' in started:
-                    break
-        return started
-    for _ in range(int(_DBG_START_WAIT_TIMEOUT_SEC * 1000 / _DBG_START_WAIT_POLL_MS)):
-        ida_dbg.wait_for_next_event(ida_dbg.WFNE_ANY | ida_dbg.WFNE_SUSP | ida_dbg.WFNE_SILENT, _DBG_START_WAIT_POLL_MS)
+    # Ported @keep_batch: enter batch mode for the whole start sequence so
+    # anything the debugger plugin shows synchronously during start_process
+    # is auto-handled. The pre-call batch state nexus observed on entry is
+    # restored by nexus itself after this program returns; the hook restores
+    # to 0 (interactive) exactly like upstream, whose get_pre_call_batch()
+    # captured the pre-wrapper state — in practice 0 outside batch-derived
+    # headless sessions, and dbg tools are GUI-only anyway.
+    old_batch = idc.batch(1)
+    try:
+        if len(list_breakpoints()) == 0:
+            for i in range(ida_entry.get_entry_qty()):
+                ordinal = ida_entry.get_entry_ordinal(i)
+                addr = ida_entry.get_entry(ordinal)
+                if addr != ida_idaapi.BADADDR:
+                    ida_dbg.add_bpt(addr, 0, idaapi.BPT_SOFT)
+        _arm_dbg_start_batch_hook(restore_batch=0)
+        hook = _dbg_start_batch_hook
+        start_result = idaapi.start_process('', '', '')
         started = _get_debug_start_result()
         if started is not None:
+            if started.get('running') and 'ip' not in started:
+                for _ in range(_DBG_START_IP_GRACE_POLL_COUNT):
+                    ida_dbg.wait_for_next_event(ida_dbg.WFNE_ANY | ida_dbg.WFNE_SUSP | ida_dbg.WFNE_SILENT, _DBG_START_WAIT_POLL_MS)
+                    waited = _get_debug_start_result()
+                    if waited is None:
+                        continue
+                    started = waited
+                    if started.get('suspended') or 'ip' in started:
+                        break
+            _schedule_dbg_start_batch_rearm(hook)
             return started
-    if start_result == 0:
-        raise ProError('Debugger start was cancelled. Stop and ask the user to configure the debugger (Debugger -> Select debugger, set the target path / arguments) and dismiss any IDA dialogs before retrying.')
-    raise ProError('Failed to start debugger. Stop and ask the user to verify that a debugger is selected (Debugger -> Select debugger), the target is configured (executable path / arguments / remote host), and any pending IDA dialogs (e.g. "matching executable names") have been dismissed before retrying.')
+        for _ in range(int(_DBG_START_WAIT_TIMEOUT_SEC * 1000 / _DBG_START_WAIT_POLL_MS)):
+            ida_dbg.wait_for_next_event(ida_dbg.WFNE_ANY | ida_dbg.WFNE_SUSP | ida_dbg.WFNE_SILENT, _DBG_START_WAIT_POLL_MS)
+            started = _get_debug_start_result()
+            if started is not None:
+                _schedule_dbg_start_batch_rearm(hook)
+                return started
+        if start_result == 0:
+            raise ProError('Debugger start was cancelled. Stop and ask the user to configure the debugger (Debugger -> Select debugger, set the target path / arguments) and dismiss any IDA dialogs before retrying.')
+        raise ProError('Failed to start debugger. Stop and ask the user to verify that a debugger is selected (Debugger -> Select debugger), the target is configured (executable path / arguments / remote host), and any pending IDA dialogs (e.g. "matching executable names") have been dismissed before retrying.')
+    except BaseException:
+        # Failure/cancel: undo the batch entry and disarm the hook so no
+        # timer/hook fires later against a start that never came up.
+        _release_dbg_start_batch_hook()
+        idc.batch(old_batch)
+        raise
 
 def dbg_status() -> DebugControlResult:
     """Return debugger lifecycle state and current IP if suspended."""
