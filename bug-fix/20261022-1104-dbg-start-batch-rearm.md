@@ -45,20 +45,25 @@ batch 恢复成进入时观测值（`_runtime.py` 550/634-635/697-698）——�
 
 - `uv run pytest -q`：**204 passed + 8 subtests**（新增 3 条全过）。
 - `uv run ruff check` / `ruff format --check` / `uv run ty check`：全绿。
-- 白盒覆盖三区（成功/中途挂起/失败）的 batch 状态机；真机 dbg 生命周期
-  重测待部署后执行（见遗留风险）。
+- 白盒覆盖三区（成功/中途挂起/失败）的 batch 状态机。
+- **真机复验（2026-10-22，修复部署后）**：wheel 重建并重部署 3 处后，
+  连续 3 轮完整 dbg 生命周期（dbg_start → regs×4 → stepping → bp CRUD
+  → continue → 自然退出 → not_running）**零崩溃**；此前同一入口约 26s
+  必崩（Qt6Core.dll c0000005）。`dbg_start` 返回时进程处于 running、
+  挂起事件稍后派发（entry bp 命中时刻晚于 start_process 返回），
+  需经 `dbg_status` 轮询等待挂起——这是真正的时序形态，不是 bug。
+  全套 22 个 dbg_* 中的生命周期/寄存器/断点/内存读写/栈回溯路径全过；
+  “对运行中进程调 dbg_continue” 的拒绝守卫与上游一致语义亦顺带验证。
 
 ## 遗留风险
 
 - **≤1ms 空窗**：nexus finally 与 re-arm timer 触发之间理论上存在一个
   事件循环周期的交互模式空窗；上游构造上是零空窗（batch 直接跨边界保持）。
   若窗口内恰好弹出同步对话框仍有崩溃可能，但唯一真正暴露此窗口的路径
-  （dbg_start 自身）已由 body 内的 batch 进入覆盖大半。真机重测通过后此
-  分歧记录在案即可。
-- 真机重测前置条件：需重建 wheel 并重部署 3 处（ida-mcp-port 独立目录、
-  IDA python311 site-packages、GUI 插件目录），重启 stdio driver 进程；
-  并请用户在新开的 IDA 实例确认 debugger 已选（Debugger → Select
-  debugger → Local Windows debugger），脏库
-  `%TEMP%\ida-smoke\sample.exe.id0` 需先经 open_database 恢复或删除。
-- `test_dbg_lifecycle.py` 驱动脚本在崩溃事件后遗留了一份 entry-bp 自动
-  添加记录，真机重测前建议先 `dbg_bps` 检视并 `dbg_delete_bp` 清理。
+  （dbg_start 自身）已由 body 内的 batch 进入覆盖大半。真机三轮全周期
+  通过，未再复现。
+- **ABI 细节记录（非缺陷）**：本机 sample.exe 的 IDB 被调试会话重基到
+  ASLR 运行时基址（entry 实际 `0x7ff71ff819a0`），`ida_dbg.get_reg_value('RIP')`
+  在该坐标系下 py_eval 直读不可靠，取 RIP 应走 `dbg_status.ip`；
+  旧 v1 驱动硬编码的 `0x20100` 属上一个未重基坐标系，`dbg_run_to` 那类
+  目标地址必须取自当前运行时状态。
