@@ -213,6 +213,25 @@ def test_all_runtime_files_are_syntax_valid() -> None:
         compile(source, filename, "exec")
 
 
+def test_deadline_helpers_are_not_injected() -> None:
+    """Regression: py_eval once shipped mcp_time_left()/mcp_deadline_exceeded()
+    stubs whose deadline was hardwired to None — mcp_deadline_exceeded() always
+    returned True, so docstring-advised `while work and not
+    mcp_deadline_exceeded():` loops processed zero items. The port owns no
+    deadline state (the nexus enforces the 300s ceiling server-side), so the
+    names must stay out of the bundle AND out of every wrapper docstring."""
+    bootstrap = _load_bootstrap()
+    for filename in bootstrap.RUNTIME_FILES:
+        source = bootstrap._read_runtime_source(filename)
+        assert "mcp_time_left" not in source, filename
+        assert "mcp_deadline_exceeded" not in source, filename
+
+    tools_path = _HERE / "ida_mcp" / "pro" / "tools.py"
+    tools_source = tools_path.read_text(encoding="utf-8")
+    assert "mcp_time_left" not in tools_source
+    assert "mcp_deadline_exceeded" not in tools_source
+
+
 def test_bundle_payload_under_wire_budget() -> None:
     bootstrap = _load_bootstrap()
     code = bootstrap.build_call_code(

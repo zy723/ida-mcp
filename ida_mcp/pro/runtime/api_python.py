@@ -5,7 +5,6 @@ from typing import Annotated, TypedDict
 import ast
 import io
 import sys
-import time
 import idaapi
 import idc
 import ida_bytes
@@ -33,22 +32,7 @@ def _make_exec_globals() -> dict:
         except Exception:
             return None
 
-    def mcp_time_left() -> float | None:
-        """Seconds remaining before the current py_eval/tool call times out,
-        or None if the call has no deadline. Long-running snippets should
-        poll this inside their loop and bail out cleanly when it gets low,
-        instead of blocking the IDA main thread past the timeout."""
-        deadline = None
-        if deadline is None:
-            return None
-        return deadline - time.monotonic()
-
-    def mcp_deadline_exceeded() -> bool:
-        """True when the current tool call's deadline has passed (or is within
-        1s of passing). Use in snippet loops: `while work and not mcp_deadline_exceeded():`"""
-        left = mcp_time_left()
-        return left is None or left <= 1.0
-    return {'__builtins__': __builtins__, 'mcp_time_left': mcp_time_left, 'mcp_deadline_exceeded': mcp_deadline_exceeded, 'idaapi': idaapi, 'idc': idc, 'idautils': lazy_import('idautils'), 'ida_allins': lazy_import('ida_allins'), 'ida_auto': lazy_import('ida_auto'), 'ida_bitrange': lazy_import('ida_bitrange'), 'ida_bytes': ida_bytes, 'ida_dbg': ida_dbg, 'ida_dirtree': lazy_import('ida_dirtree'), 'ida_diskio': lazy_import('ida_diskio'), 'ida_entry': ida_entry, 'ida_expr': lazy_import('ida_expr'), 'ida_fixup': lazy_import('ida_fixup'), 'ida_fpro': lazy_import('ida_fpro'), 'ida_frame': ida_frame, 'ida_funcs': ida_funcs, 'ida_gdl': lazy_import('ida_gdl'), 'ida_graph': lazy_import('ida_graph'), 'ida_hexrays': ida_hexrays, 'ida_ida': ida_ida, 'ida_idd': lazy_import('ida_idd'), 'ida_idp': lazy_import('ida_idp'), 'ida_ieee': lazy_import('ida_ieee'), 'ida_kernwin': ida_kernwin, 'ida_libfuncs': lazy_import('ida_libfuncs'), 'ida_lines': ida_lines, 'ida_loader': lazy_import('ida_loader'), 'ida_merge': lazy_import('ida_merge'), 'ida_mergemod': lazy_import('ida_mergemod'), 'ida_moves': lazy_import('ida_moves'), 'ida_nalt': ida_nalt, 'ida_name': ida_name, 'ida_netnode': lazy_import('ida_netnode'), 'ida_offset': lazy_import('ida_offset'), 'ida_pro': lazy_import('ida_pro'), 'ida_problems': lazy_import('ida_problems'), 'ida_range': lazy_import('ida_range'), 'ida_regfinder': lazy_import('ida_regfinder'), 'ida_registry': lazy_import('ida_registry'), 'ida_search': lazy_import('ida_search'), 'ida_segment': ida_segment, 'ida_segregs': lazy_import('ida_segregs'), 'ida_srclang': lazy_import('ida_srclang'), 'ida_strlist': lazy_import('ida_strlist'), 'ida_struct': lazy_import('ida_struct'), 'ida_tryblks': lazy_import('ida_tryblks'), 'ida_typeinf': ida_typeinf, 'ida_ua': lazy_import('ida_ua'), 'ida_undo': lazy_import('ida_undo'), 'ida_xref': ida_xref, 'ida_enum': lazy_import('ida_enum'), 'parse_address': parse_address, 'get_function': get_function}
+    return {'__builtins__': __builtins__, 'idaapi': idaapi, 'idc': idc, 'idautils': lazy_import('idautils'), 'ida_allins': lazy_import('ida_allins'), 'ida_auto': lazy_import('ida_auto'), 'ida_bitrange': lazy_import('ida_bitrange'), 'ida_bytes': ida_bytes, 'ida_dbg': ida_dbg, 'ida_dirtree': lazy_import('ida_dirtree'), 'ida_diskio': lazy_import('ida_diskio'), 'ida_entry': ida_entry, 'ida_expr': lazy_import('ida_expr'), 'ida_fixup': lazy_import('ida_fixup'), 'ida_fpro': lazy_import('ida_fpro'), 'ida_frame': ida_frame, 'ida_funcs': ida_funcs, 'ida_gdl': lazy_import('ida_gdl'), 'ida_graph': lazy_import('ida_graph'), 'ida_hexrays': ida_hexrays, 'ida_ida': ida_ida, 'ida_idd': lazy_import('ida_idd'), 'ida_idp': lazy_import('ida_idp'), 'ida_ieee': lazy_import('ida_ieee'), 'ida_kernwin': ida_kernwin, 'ida_libfuncs': lazy_import('ida_libfuncs'), 'ida_lines': ida_lines, 'ida_loader': lazy_import('ida_loader'), 'ida_merge': lazy_import('ida_merge'), 'ida_mergemod': lazy_import('ida_mergemod'), 'ida_moves': lazy_import('ida_moves'), 'ida_nalt': ida_nalt, 'ida_name': ida_name, 'ida_netnode': lazy_import('ida_netnode'), 'ida_offset': lazy_import('ida_offset'), 'ida_pro': lazy_import('ida_pro'), 'ida_problems': lazy_import('ida_problems'), 'ida_range': lazy_import('ida_range'), 'ida_regfinder': lazy_import('ida_regfinder'), 'ida_registry': lazy_import('ida_registry'), 'ida_search': lazy_import('ida_search'), 'ida_segment': ida_segment, 'ida_segregs': lazy_import('ida_segregs'), 'ida_srclang': lazy_import('ida_srclang'), 'ida_strlist': lazy_import('ida_strlist'), 'ida_struct': lazy_import('ida_struct'), 'ida_tryblks': lazy_import('ida_tryblks'), 'ida_typeinf': ida_typeinf, 'ida_ua': lazy_import('ida_ua'), 'ida_undo': lazy_import('ida_undo'), 'ida_xref': ida_xref, 'ida_enum': lazy_import('ida_enum'), 'parse_address': parse_address, 'get_function': get_function}
 
 class PythonExecResult(TypedDict):
     result: str
@@ -68,11 +52,10 @@ def py_eval(code: Annotated[str, 'Python code'], new_locals: Annotated[bool, 'Fa
     per call; only locals persist. Jupyter-style last-expression return:
     if the code ends with an expression, its value is returned in "result".
 
-    Timeouts for long snippets: this tool runs with a 300s ceiling, and the
-    helpers mcp_time_left() / mcp_deadline_exceeded() are injected into the
-    snippet namespace. Poll them inside long loops so the main thread bails
-    out cleanly instead of freezing every other MCP call (including
-    server_health) behind a non-polling C++ call.
+    Timeouts for long snippets: this tool runs with a 300s ceiling enforced
+    by the nexus side — a snippet that blocks past it is cancelled there
+    (the worker's main-thread pump cannot be interrupted from inside Python,
+    so no pollable deadline helpers are provided).
     """
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()

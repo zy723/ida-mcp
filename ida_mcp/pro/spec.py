@@ -317,8 +317,10 @@ PRO_EXTENSIONS: dict[str, frozenset[str]] = {
 }
 
 PRO_TOOL_COUNT = len(TOOLS)
-assert PRO_TOOL_COUNT == 95, f"expected 95 tools, got {PRO_TOOL_COUNT}"
-assert len(DBG_TOOLS) == 22, f"expected 22 dbg tools, got {len(DBG_TOOLS)}"
+if PRO_TOOL_COUNT != 95:
+    raise RuntimeError(f"expected 95 tools, got {PRO_TOOL_COUNT}")
+if len(DBG_TOOLS) != 22:
+    raise RuntimeError(f"expected 22 dbg tools, got {len(DBG_TOOLS)}")
 
 # Extension-group membership for every gated tool, for quick lookups.
 _TOOL_TO_GROUP: dict[str, str] = {
@@ -403,7 +405,8 @@ _resource(
 )
 
 PRO_RESOURCE_COUNT = len(RESOURCES)
-assert PRO_RESOURCE_COUNT == 11, f"expected 11 resources, got {PRO_RESOURCE_COUNT}"
+if PRO_RESOURCE_COUNT != 11:
+    raise RuntimeError(f"expected 11 resources, got {PRO_RESOURCE_COUNT}")
 
 __all__ = [
     "DBG_EXTENSION_GROUP",

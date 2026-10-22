@@ -7,7 +7,6 @@ import os
 import re
 import struct
 import sys
-import tempfile
 from typing import Annotated, Any, Callable, Generic, Literal, NotRequired, Optional, TypedDict, TypeVar, overload
 import ida_bytes
 import ida_funcs

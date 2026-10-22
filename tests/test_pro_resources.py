@@ -156,6 +156,19 @@ def test_resource_pro_error_raises_tool_error(manager: _FakeManager) -> None:
     assert manager.calls
 
 
+def test_selection_resource_gui_only_error_matches_cursor(
+    manager: _FakeManager,
+) -> None:
+    """Regression: selection_resource once keyed its GUI check off
+    get_current_widget(), which is also None in a real GUI when no IDA
+    widget has focus — the resource then misreported "no active IDA
+    widget" on a healthy GUI. It must use the same discriminator as
+    cursor_resource: is_idaq()."""
+    manager.result = {"pro_error": "GUI-only resource: idalib has no selection"}
+    with pytest.raises(McpToolError, match="GUI-only resource"):
+        asyncio.run(pro_resources._read("selection_resource", {}))
+
+
 def test_resource_uses_default_timeout_and_pro_label(manager: _FakeManager) -> None:
     asyncio.run(pro_resources._read("idb_segments_resource", {}))
     call = manager.calls[0]

@@ -1217,11 +1217,10 @@ async def py_eval(
     per call; only locals persist. Jupyter-style last-expression return:
     if the code ends with an expression, its value is returned in "result".
 
-    Timeouts for long snippets: this tool runs with a 300s ceiling, and the
-    helpers mcp_time_left() / mcp_deadline_exceeded() are injected into the
-    snippet namespace. Poll them inside long loops so the main thread bails
-    out cleanly instead of freezing every other MCP call (including
-    server_health) behind a non-polling C++ call."""
+    Timeouts for long snippets: this tool runs with a 300s ceiling enforced
+    by the nexus side — a snippet that blocks past it is cancelled there
+    (the worker's main-thread pump cannot be interrupted from inside Python,
+    so no pollable deadline helpers are provided)."""
     args = {"code": code, "new_locals": new_locals}
     if instance_id is not None:
         args["instance_id"] = instance_id

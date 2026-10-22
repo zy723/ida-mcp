@@ -77,9 +77,11 @@ def cursor_resource() -> dict:
 def selection_resource() -> dict:
     """Get current selection range (if any)"""
     import ida_kernwin
-    widget = ida_kernwin.get_current_widget()
-    if widget is None:
-        raise ProError('GUI-only resource: no active IDA widget')
+    # GUI-only like cursor: get_current_widget() returns None whenever no
+    # widget has focus (e.g. IDA in the background), so it cannot be the
+    # idalib discriminator — is_idaq() can.
+    if not ida_kernwin.is_idaq():
+        raise ProError('GUI-only resource: idalib has no selection')
     start = ida_kernwin.read_range_selection(None)
     if start:
         return {'start': hex(start[0]), 'end': hex(start[1]) if start[1] else None}
